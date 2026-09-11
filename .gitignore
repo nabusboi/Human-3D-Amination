@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Large model weight files
+*.pt
+*.pth
+*.onnx
+*.h5
+*.bin
+*.safetensors
+
+# Datasets (large, not needed)
+data/
+
+# Trained model checkpoints
+models/
+
+# Output files
+output/
+
+# Virtual environments
+venv/
+.venv/
+env/
