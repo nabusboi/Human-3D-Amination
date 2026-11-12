@@ -43,6 +43,17 @@ for path in MODEL_SUBDIRS.values():
 # Alias used by coco_dataset.py as the default COCO 2017 data directory
 KAGGLE_DATASET_DIR = DATASET_SUBDIRS["coco2017"]
 
+# Dataset Repository & Download Links
+DATASET_URLS = {
+    "coco2017":           "https://www.kaggle.com/datasets/awsaf49/coco-2017-dataset",
+    "cmu_mocap":          "https://www.kaggle.com/datasets/zara2099/cmu-motion-performance-dataset",
+    "hdtf":               "https://github.com/MRzzm/HDTF",
+    "synthetic_faces":    "https://www.kaggle.com/datasets/cantonioupao/synthetic-human-faces-for-3d-reconstruction",
+    "audio_talking_head": "https://www.kaggle.com/competitions/audio-driven-talking-head-generation",
+    "amass":              "https://amass.is.tue.mpg.de/",
+    "mvp_human":          "https://github.com/TingtingLiao/MVPHuman.git",
+}
+
 # Camera & Video Stream Settings
 WEBCAM_INDEX = 0
 FRAME_WIDTH = 1280
