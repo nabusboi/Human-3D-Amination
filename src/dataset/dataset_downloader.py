@@ -7,8 +7,6 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 import subprocess
-import urllib.request
-from typing import Optional, Dict
 import config
 
 

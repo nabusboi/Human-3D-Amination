@@ -1,8 +1,11 @@
 import os
+import time
+from itertools import permutations
+from math import hypot
 import cv2
 import numpy as np
 import urllib.request
-from typing import Tuple, List, Dict, Optional
+from typing import Tuple, Dict, Optional
 import config
 
 try:
@@ -55,12 +58,25 @@ class MediaPipePoseEstimator:
     ]
 
     def __init__(self,
-                 complexity: int = config.MEDIAPIPE_MODEL_COMPLEXITY,
                  min_detection_conf: float = config.MEDIAPIPE_MIN_DETECTION_CONFIDENCE,
                  min_tracking_conf: float = config.MEDIAPIPE_MIN_TRACKING_CONFIDENCE):
         self.mode = None
         self.pose_engine = None
         self.hand_engine = None
+        self.hand_recovery_engine = None
+        self._last_hand_recovery = -float("inf")
+        self._hand_cache = {}
+        self._hand_filter = {}
+        self._hand_pending = {}
+        self.hands_contact = False
+        self._contact_hands = None
+        self._contact_seen = -float("inf")
+        self._separated_since = None
+        self.hand_world_landmarks = {}
+        self.pose_world_landmarks = None
+        self._hand_wrist_history = {}
+        self._timestamp_ms = -1
+        self._hand_warning_shown = False
 
         if not MEDIAPIPE_AVAILABLE:
             print("[MediaPipe Warning] mediapipe package not installed.")
@@ -76,7 +92,7 @@ class MediaPipePoseEstimator:
             if os.path.exists(pose_path):
                 pose_opts = vision.PoseLandmarkerOptions(
                     base_options=BaseOptions(model_asset_path=pose_path),
-                    running_mode=vision.RunningMode.IMAGE,
+                    running_mode=vision.RunningMode.VIDEO,
                     min_pose_detection_confidence=min_detection_conf,
                     min_pose_presence_confidence=min_detection_conf,
                     min_tracking_confidence=min_tracking_conf,
@@ -87,13 +103,20 @@ class MediaPipePoseEstimator:
             if os.path.exists(hand_path):
                 hand_opts = vision.HandLandmarkerOptions(
                     base_options=BaseOptions(model_asset_path=hand_path),
-                    running_mode=vision.RunningMode.IMAGE,
-                    min_hand_detection_confidence=min_detection_conf,
-                    min_hand_presence_confidence=min_detection_conf,
-                    min_tracking_confidence=min_tracking_conf,
+                    running_mode=vision.RunningMode.VIDEO,
+                    min_hand_detection_confidence=0.45,
+                    min_hand_presence_confidence=0.45,
+                    min_tracking_confidence=0.50,
                     num_hands=2
                 )
                 self.hand_engine = vision.HandLandmarker.create_from_options(hand_opts)
+                self.hand_recovery_engine = vision.HandLandmarker.create_from_options(
+                    vision.HandLandmarkerOptions(
+                        base_options=BaseOptions(model_asset_path=hand_path),
+                        running_mode=vision.RunningMode.IMAGE,
+                        min_hand_detection_confidence=0.45,
+                        min_hand_presence_confidence=0.45,
+                        num_hands=2))
 
             self.mode = "tasks"
             print("[MediaPipe] Initialized 3D Body Pose & 21-Keypoint Hand Tracking Engine.")
@@ -110,7 +133,12 @@ class MediaPipePoseEstimator:
             average_confidence: mean visibility score across keypoints
             hands_dict: dict containing 'left_hand' [21, 3] and 'right_hand' [21, 3] keypoints
         """
-        if frame is None or self.pose_engine is None:
+        self.hand_world_landmarks = {}
+        self.pose_world_landmarks = None
+        self.hands_contact = False
+        if time.monotonic() - self._contact_seen > 0.45:
+            self._contact_hands = None
+        if frame is None or (self.pose_engine is None and self.hand_engine is None):
             return None, None, 0.0, None
 
         h, w, _ = frame.shape
@@ -118,56 +146,30 @@ class MediaPipePoseEstimator:
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
 
         # 1. Pose Detection
-        pose_result = self.pose_engine.detect(mp_image)
-        if not pose_result or not pose_result.pose_landmarks or len(pose_result.pose_landmarks) == 0:
-            return None, None, 0.0, None
+        timestamp = max(self._timestamp_ms + 1, int(time.monotonic() * 1000))
+        self._timestamp_ms = timestamp
+        pose_result = (self.pose_engine.detect_for_video(mp_image, timestamp)
+                       if self.pose_engine is not None else None)
+        landmarks_array = None
+        if pose_result and pose_result.pose_landmarks:
+            raw_landmarks = pose_result.pose_landmarks[0]
+            landmarks_array = np.zeros((33, 4), dtype=np.float32)
+            for i, lm in enumerate(raw_landmarks[:33]):
+                vis = getattr(lm, "visibility", 1.0)
+                landmarks_array[i] = [lm.x * w, lm.y * h, lm.z,
+                                      vis if vis is not None else 1.0]
+            if pose_result.pose_world_landmarks:
+                metric = np.asarray([[lm.x, lm.y, lm.z]
+                                     for lm in pose_result.pose_world_landmarks[0]], dtype=np.float32)
+                if metric.shape == (33, 3) and np.isfinite(metric).all():
+                    self.pose_world_landmarks = metric
 
-        raw_landmarks = pose_result.pose_landmarks[0]
-        landmarks_array = np.zeros((33, 4), dtype=np.float32)
+        # Preserve actual visibility. The native rig uses its idle pose for
+        # occluded joints; invented high-confidence positions bend it incorrectly.
 
-        for i in range(min(33, len(raw_landmarks))):
-            lm = raw_landmarks[i]
-            px, py = lm.x * w, lm.y * h
-            vis = getattr(lm, "visibility", 1.0)
-            if vis is None:
-                vis = 1.0
-            landmarks_array[i] = [px, py, lm.z, vis]
-
-        # Smart extrapolation for occluded lower body & arms
-        s11_vis, s12_vis = landmarks_array[11][3], landmarks_array[12][3]
-        if s11_vis > 0.35 and s12_vis > 0.35:
-            shoulder_width = np.linalg.norm(landmarks_array[11][:2] - landmarks_array[12][:2])
-            mid_shoulder = (landmarks_array[11][:2] + landmarks_array[12][:2]) * 0.5
-            torso_len = max(shoulder_width * 1.3, 120.0)
-
-            if landmarks_array[13][3] < 0.35:
-                landmarks_array[13] = [landmarks_array[11][0] - shoulder_width * 0.4, landmarks_array[11][1] + shoulder_width * 0.8, 0.0, 0.85]
-            if landmarks_array[14][3] < 0.35:
-                landmarks_array[14] = [landmarks_array[12][0] + shoulder_width * 0.4, landmarks_array[12][1] + shoulder_width * 0.8, 0.0, 0.85]
-
-            if landmarks_array[15][3] < 0.35:
-                landmarks_array[15] = [landmarks_array[13][0] - shoulder_width * 0.2, landmarks_array[13][1] + shoulder_width * 0.7, 0.0, 0.80]
-            if landmarks_array[16][3] < 0.35:
-                landmarks_array[16] = [landmarks_array[14][0] + shoulder_width * 0.2, landmarks_array[14][1] + shoulder_width * 0.7, 0.0, 0.80]
-
-            if landmarks_array[23][3] < 0.35:
-                landmarks_array[23] = [mid_shoulder[0] - shoulder_width * 0.35, mid_shoulder[1] + torso_len, 0.0, 0.85]
-            if landmarks_array[24][3] < 0.35:
-                landmarks_array[24] = [mid_shoulder[0] + shoulder_width * 0.35, mid_shoulder[1] + torso_len, 0.0, 0.85]
-
-            leg_len = torso_len * 1.1
-            if landmarks_array[25][3] < 0.35:
-                landmarks_array[25] = [landmarks_array[23][0], landmarks_array[23][1] + leg_len, 0.0, 0.80]
-            if landmarks_array[26][3] < 0.35:
-                landmarks_array[26] = [landmarks_array[24][0], landmarks_array[24][1] + leg_len, 0.0, 0.80]
-            if landmarks_array[27][3] < 0.35:
-                landmarks_array[27] = [landmarks_array[25][0], landmarks_array[25][1] + leg_len, 0.0, 0.75]
-            if landmarks_array[28][3] < 0.35:
-                landmarks_array[28] = [landmarks_array[26][0], landmarks_array[26][1] + leg_len, 0.0, 0.75]
-
-        landmark_dict = {}
+        landmark_dict = {} if landmarks_array is not None else None
         total_vis = 0.0
-        for i in range(33):
+        for i in range(33 if landmarks_array is not None else 0):
             px, py, z, vis = landmarks_array[i]
             name = self.LANDMARK_NAMES[i] if i < len(self.LANDMARK_NAMES) else f"lm_{i}"
             landmark_dict[i] = {
@@ -181,26 +183,237 @@ class MediaPipePoseEstimator:
         hands_dict = {"left_hand": None, "right_hand": None}
         if self.hand_engine is not None:
             try:
-                hand_result = self.hand_engine.detect(mp_image)
-                if hand_result and hand_result.hand_landmarks and len(hand_result.hand_landmarks) > 0:
-                    for idx, hand_lms in enumerate(hand_result.hand_landmarks):
-                        # Determine left vs right hand
-                        handedness = "Right"
-                        if hand_result.handedness and idx < len(hand_result.handedness):
-                            handedness = hand_result.handedness[idx][0].category_name
-
-                        h_pts = np.zeros((21, 3), dtype=np.float32)
-                        for h_i, h_lm in enumerate(hand_lms):
-                            h_pts[h_i] = [h_lm.x * w, h_lm.y * h, h_lm.z]
-
-                        if handedness == "Left":
-                            hands_dict["left_hand"] = h_pts
-                        else:
-                            hands_dict["right_hand"] = h_pts
+                hand_result = self.hand_engine.detect_for_video(mp_image, timestamp)
+                # VIDEO tracking may keep following one palm when two overlap.
+                # Periodically run fresh detection, without duplicating a palm.
+                now = time.monotonic()
+                if (self.hand_recovery_engine is not None
+                        and len(hand_result.hand_landmarks) < 2
+                        and self._contact_hands is None
+                        and now - self._last_hand_recovery >= 0.35):
+                    self._last_hand_recovery = now
+                    recovered = self.hand_recovery_engine.detect(mp_image)
+                    if len(recovered.hand_landmarks) > len(hand_result.hand_landmarks):
+                        hand_result = recovered
+                if hand_result and hand_result.hand_landmarks:
+                    hands_dict = self._assign_hands(hand_result, landmarks_array, w, h)
+                elif self._contact_hands is not None and now - self._contact_seen < 0.35:
+                    self.hands_contact = True
+                    for key, (points, world) in self._contact_hands.items():
+                        hands_dict[key] = points.copy()
+                        if world is not None:
+                            self.hand_world_landmarks[key] = world.copy()
+                for key in hands_dict:
+                    if hands_dict[key] is not None and not self.hands_contact:
+                        self._hand_cache[key] = (
+                            hands_dict[key].copy(), self.hand_world_landmarks.get(key), now)
+                    elif hands_dict[key] is None and key in self._hand_cache:
+                        points, world, seen = self._hand_cache[key]
+                        # Brief occlusion hold, not a new detection. Never refresh
+                        # its timestamp from held data or invent the other hand.
+                        if now - seen < 0.35:
+                            hands_dict[key] = points.copy()
+                            if world is not None:
+                                self.hand_world_landmarks[key] = world
             except Exception as e:
-                pass
+                if not self._hand_warning_shown:
+                    print(f"[MediaPipe Warning] Hand tracking failed: {e}")
+                    self._hand_warning_shown = True
 
         return landmarks_array, landmark_dict, avg_conf, hands_dict
+
+    def _assign_hands(self, result, pose, width, height):
+        """Associate hands with body wrists, including mirrored camera input.
+
+        Handedness labels alone can disagree with the pose skeleton. The
+        one-to-one match prevents one raised hand from driving the other arm.
+        Metric hand geometry is kept separately from image-space wrist anchors.
+        """
+        keys = ("left_hand", "right_hand")
+        hands = dict.fromkeys(keys)
+        detections = []
+        for i, points in enumerate(result.hand_landmarks[:2]):
+            image_points = np.asarray(
+                [[p.x * width, p.y * height, p.z] for p in points], dtype=np.float32)
+            if image_points.shape != (21, 3) or not np.isfinite(image_points).all():
+                continue
+            label = None
+            if i < len(result.handedness) and result.handedness[i]:
+                label = result.handedness[i][0].category_name.lower() + "_hand"
+            world = None
+            if i < len(result.hand_world_landmarks):
+                world = np.asarray([[p.x, p.y, p.z]
+                                    for p in result.hand_world_landmarks[i]], dtype=np.float32)
+                if world.shape != (21, 3) or not np.isfinite(world).all():
+                    world = None
+            detections.append((image_points, world, label))
+        if not detections:
+            return hands
+
+        now = time.monotonic()
+        guarded = self._guard_hand_contact(detections, pose, now)
+        if guarded is not None:
+            return guarded
+        costs = np.zeros((len(detections), 2))
+        for row, (points, _, label) in enumerate(detections):
+            for side, wrist in enumerate((15, 16)):
+                anchor = None
+                if (pose is not None and pose[wrist, 3] >= 0.65
+                        and np.isfinite(pose[wrist, :2]).all()
+                        and 0 <= pose[wrist, 0] < width and 0 <= pose[wrist, 1] < height):
+                    anchor = pose[wrist, :2]
+                elif keys[side] in self._hand_wrist_history:
+                    previous, seen = self._hand_wrist_history[keys[side]]
+                    if now - seen < 0.4:
+                        anchor = previous
+                label_penalty = 0.0 if label == keys[side] else 0.04
+                if anchor is not None:
+                    distance = np.linalg.norm(points[0, :2] - anchor) / hypot(width, height)
+                    costs[row, side] = distance + label_penalty
+                else:
+                    costs[row, side] = 0.20 + label_penalty
+                previous = self._hand_wrist_history.get(keys[side])
+                if previous is not None and now - previous[1] < 0.4:
+                    costs[row, side] += 0.5 * np.linalg.norm(
+                        points[0, :2] - previous[0]) / hypot(width, height)
+        assignment = min(permutations(range(2), len(detections)),
+                         key=lambda order: sum(costs[i, side]
+                                               for i, side in enumerate(order)))
+        for (points, world, _), side in zip(detections, assignment):
+            key = keys[side]
+            filtered = self._stabilize_hand(key, points, world, now)
+            if filtered is None:
+                continue
+            points, world = filtered
+            hands[key] = points
+            if world is not None:
+                self.hand_world_landmarks[key] = world
+            self._hand_wrist_history[key] = (points[0, :2].copy(), now)
+        return hands
+
+    def _stabilize_hand(self, key, points, world, now):
+        """Filter measured hands before both wrist IK and finger retargeting.
+
+        Compare against the accepted pose, so slow intentional movement can
+        accumulate past the deadband. Ignore depth-only noise while the image
+        landmarks are still; require repeated evidence for large pose jumps.
+        """
+        if world is not None:
+            world = world - world[0]
+        previous = self._hand_filter.get(key)
+        if previous is not None and now - previous[2] < 0.45:
+            old, old_world, seen = previous
+            palm = max(12.0, float(np.linalg.norm(old[9, :2] - old[0, :2])))
+            movement = float(np.max(np.linalg.norm(points[:, :2] - old[:, :2], axis=1)))
+            if movement < max(1.5, palm * 0.025):
+                self._hand_pending.pop(key, None)
+                self._hand_filter[key] = (old, old_world, now)
+                return old.copy(), None if old_world is None else old_world.copy()
+            depth_jump = (old_world is not None and world is not None
+                          and np.max(np.linalg.norm(world - old_world, axis=1)) > 0.08)
+            if movement > palm * 0.80 or depth_jump:
+                pending = self._hand_pending.get(key)
+                consistent = (pending is not None
+                              and np.max(np.linalg.norm(points[:, :2] - pending[0][:, :2], axis=1)) < palm * 0.25)
+                if consistent and world is not None and pending[1] is not None:
+                    consistent = np.max(np.linalg.norm(world - pending[1], axis=1)) < 0.035
+                if not consistent:
+                    self._hand_pending[key] = (points.copy(), world, now)
+                    return None
+                if now - pending[2] < 0.15:
+                    return None
+            self._hand_pending.pop(key, None)
+            dt = min(0.15, max(0.001, now - seen))
+            tau = 0.045 if movement > palm * 0.15 else 0.12
+            alpha = 1.0 - np.exp(-dt / tau)
+            points = old + (points - old) * alpha
+            if old_world is not None and world is not None:
+                world = old_world + (world - old_world) * alpha
+        else:
+            self._hand_pending.pop(key, None)
+        self._hand_filter[key] = (points.copy(), None if world is None else world.copy(), now)
+        return points, world
+
+    def _guard_hand_contact(self, detections, pose, now):
+        """Overlapping palms do not provide reliable side or finger depth.
+
+        Keep separate, previously observed hand shapes through contact.
+        A single detected palm is never copied onto the other hand.
+        """
+        keys = ("left_hand", "right_hand")
+        palms = [entry[0] for entry in detections]
+        size = max(12.0, float(np.median([
+            np.linalg.norm(p[9, :2] - p[0, :2]) for p in palms])))
+        center = np.mean([p[0, :2] for p in palms], axis=0)
+        close = False
+        if len(palms) == 2:
+            wrist_gap = np.linalg.norm(palms[0][0, :2] - palms[1][0, :2])
+            palm_gap = np.linalg.norm(
+                palms[0][[0, 5, 9, 13, 17], :2].mean(axis=0)
+                - palms[1][[0, 5, 9, 13, 17], :2].mean(axis=0))
+            threshold = 1.60 if self._contact_hands is not None else 1.10
+            close = wrist_gap < threshold * size and palm_gap < threshold * size
+        elif self._contact_hands is not None:
+            previous_center = np.mean(
+                [entry[0][0, :2] for entry in self._contact_hands.values()], axis=0)
+            close = np.linalg.norm(center - previous_center) < size * 1.5
+            if (pose is not None and np.min(pose[[15, 16], 3]) >= 0.75
+                    and np.linalg.norm(pose[15, :2] - pose[16, :2]) > size * 2):
+                close = False
+        elif pose is not None and np.min(pose[[15, 16], 3]) >= 0.65:
+            # One palm can vanish just as the wrists meet.
+            wrists = pose[[15, 16], :2]
+            close = (np.linalg.norm(wrists[0] - wrists[1]) < size * 0.85
+                     and np.linalg.norm(center - wrists.mean(axis=0)) < size)
+
+        if close:
+            self._separated_since = None
+            self._contact_seen = now
+            if self._contact_hands is None:
+                recent = {key: self._hand_cache[key] for key in keys
+                          if key in self._hand_cache
+                          and now - self._hand_cache[key][2] < 0.45}
+                if len(recent) == 2:
+                    self._contact_hands = {
+                        key: (points.copy(), None if world is None else world.copy())
+                        for key, (points, world, _) in recent.items()}
+            self.hands_contact = True
+        elif self._contact_hands is not None:
+            if self._separated_since is None:
+                self._separated_since = now
+            # Require sustained separation, not a single noisy detection.
+            if now - self._separated_since >= 0.25:
+                self._contact_hands = None
+            else:
+                self.hands_contact = True
+
+        if not self.hands_contact:
+            return None
+        if self._contact_hands is None:
+            # No reliable pair before contact: do not invent a prayer pose.
+            return dict.fromkeys(keys)
+        if len(palms) == 2 and close:
+            old_center = np.mean(
+                [entry[0][0, :2] for entry in self._contact_hands.values()], axis=0)
+            shift = center - old_center
+            length = np.linalg.norm(shift)
+            shift *= min(0.25, size * 0.12 / max(length, 1e-6))
+            for points, _ in self._contact_hands.values():
+                points[:, :2] += shift
+        held = {}
+        for key, (points, world) in self._contact_hands.items():
+            held[key] = points.copy()
+            if world is not None:
+                self.hand_world_landmarks[key] = world.copy()
+            self._hand_wrist_history[key] = (points[0, :2].copy(), now)
+        return held
+
+    def close(self):
+        for name in ("pose_engine", "hand_engine", "hand_recovery_engine"):
+            engine = getattr(self, name, None)
+            if engine is not None:
+                engine.close()
+                setattr(self, name, None)
 
     def validate_precheck(self, landmarks_array: Optional[np.ndarray]) -> Tuple[bool, str, float, float]:
         """Pre-recording check: Verifies face and shoulders are detected."""

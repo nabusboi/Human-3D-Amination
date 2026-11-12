@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as T
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 import config
 
 

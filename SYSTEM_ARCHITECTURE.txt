@@ -1,0 +1,61 @@
+HUMAN-TO-3D AVATAR SYSTEM SUMMARY
+=================================
+
+TECH STACK
+----------
+Python is the main language. OpenCV handles webcam capture, the desktop window,
+status overlays and MP4 recording. PyTorch runs the custom multi-task LoRA
+Transformer. MediaPipe provides body, hand, face, iris and head-pose tracking.
+Ultralytics YOLOv8n detects the person bounding box. Panda3D and panda3d-gltf
+load and render the Ready Player Me GLB avatar. NumPy performs landmark and
+geometry calculations. The program runs locally through `python main.py`; it
+does not use a web server, browser or HTML page.
+
+MODEL FEATURES
+--------------
+The unified model has 4,282,285 total parameters. Approximately 197,000 to
+209,000 parameters are trainable for one task. It supports four task branches:
+COCO body keypoints, CMU MoCap joints, HDTF facial values and Synthetic Faces
+camera parameters. Each task has separate LoRA adapters and an output head.
+
+MODEL LAYERS
+------------
+COCO input path:
+  Image [3 x 256 x 256]
+  -> Conv2d 3-to-64, BatchNorm, GELU, MaxPool
+  -> Conv2d 64-to-256, BatchNorm, GELU
+  -> flattened 256-dimensional tokens
+
+HDTF input path:
+  11 facial landmarks [11 x 3]
+  -> Linear 3-to-256
+
+Shared hidden path:
+  4 Transformer blocks. Each block contains 8-head attention, two LayerNorms
+  and a LoRA feed-forward path: Linear 256-to-1024, GELU, Linear 1024-to-256.
+
+Output heads:
+  COCO: global pooling -> Linear 256-to-128 -> GELU -> Linear 128-to-51,
+  reshaped into 17 keypoints with x, y and visibility.
+  HDTF: global pooling -> Linear 256-to-128 -> GELU -> Linear 128-to-4 for
+  mouth opening, lip stretch, blinking and head roll.
+
+USED COMPONENTS
+---------------
+MediaPipe directly drives body, hands, fingers, face, eyes and head motion.
+YOLO supplies the displayed person box. The checkpoint's COCO branch assists
+body landmarks every third frame. HDTF inference is attempted, but the current
+checkpoint produces non-finite HDTF values, so the pipeline rejects them and
+uses MediaPipe facial measurements. The neural MoCap and Faces branches are not
+called by main.py. Panda3D retargets accepted measurements to the GLB skeleton.
+
+FROZEN COMPONENTS AND REASONS
+-----------------------------
+During each task's training, only that task's LoRA A/B matrices and output head
+are trainable. The CNN and landmark encoders, positional embedding, attention,
+LayerNorms, base feed-forward weights, other adapters and other heads are
+frozen. This reduces memory, limits each task to about five percent trainable
+parameters and prevents one task from overwriting another task's adapters.
+However, the shared backbone was randomly initialized rather than pretrained,
+so freezing it limits model quality. During main.py execution, model.eval() and
+torch.inference_mode() prevent all checkpoint weights from changing.

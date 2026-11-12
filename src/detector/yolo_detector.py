@@ -16,15 +16,16 @@ class YOLOHumanDetector:
     Isolates person bounding boxes (COCO class 0) for ROI extraction and pre-recording framing checks.
     """
 
-    def __init__(self, model_name: str = config.YOLO_MODEL_NAME, conf_threshold: float = config.YOLO_CONFIDENCE_THRESHOLD):
+    def __init__(self, model_path: str = config.YOLO_MODEL_PATH,
+                 conf_threshold: float = config.YOLO_CONFIDENCE_THRESHOLD):
         self.conf_threshold = conf_threshold
         self.model = None
         
         if ULTRALYTICS_AVAILABLE:
             try:
-                self.model = YOLO(model_name)
+                self.model = YOLO(model_path)
             except Exception as e:
-                print(f"[YOLO Warning] Could not load YOLO model '{model_name}': {e}. Falling back to OpenCV ROI mode.")
+                print(f"[YOLO Warning] Could not load YOLO model '{model_path}': {e}. Falling back to OpenCV ROI mode.")
         else:
             print("[YOLO Warning] Ultralytics package not available. Falling back to OpenCV ROI mode.")
 

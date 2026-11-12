@@ -8,6 +8,18 @@ Project     : DV (Digital Visualizer)
 Tech Stack  : Python 3.10+, PyTorch, OpenCV, MediaPipe, Ultralytics YOLOv8, QLoRA
 Platform    : Real-Time Edge / Local PC (Webcam Driven)
 
+CURRENT DESKTOP RUNTIME (see README.md for launch instructions)
+-------------------------------------------------------------
+main.py opens the Python webcam window. The avatar is now the local skinned
+rpm_fullbody.glb rendered by Panda3D, replacing the older drawn 2.5D avatar
+described in Section 5. Portrait framing follows face size. Palm orientation,
+finger articulation, and arm IK use MediaPipe tracking; the existing QLoRA
+checkpoint contributes through its COCO and HDTF branches. There is no web server.
+
+The detailed 2.5D renderer sections below are retained as historical project and
+presentation notes. They do not describe the current runtime. README.md and
+SYSTEM_ARCHITECTURE.md are the current implementation references.
+
 
 ================================================================================
 TABLE OF CONTENTS
@@ -136,10 +148,9 @@ high-throughput 10-stage pipeline:
         └── Side-by-side Webcam + Avatar preview + Control Banner
                    │
                    ▼
-  [ Stage 10: Multi-Format Exporter & Telemetry / WebSocket ]
+  [ Stage 10: Multi-Format Exporter & Telemetry ]
         ├── Synchronized MP4 Video Writer
         ├── Timestamped JSON Keypoint Telemetry File
-        └── Optional FastAPI / WebSocket Streaming Endpoint
 
 
 2.2 Detailed Breakdown of Pipeline Stages
@@ -312,7 +323,6 @@ SECTION 6: SYSTEM ARCHITECTURE, DIRECTORY STRUCTURE & LIBRARY REFERENCE
 DV/
 ├── main.py                     # Primary desktop entry point (OpenCV GUI)
 ├── train_all.py                # Multi-task QLoRA training script
-├── server.py                   # FastAPI + WebSocket server for remote clients
 ├── config.py                   # Central settings, paths, and hyperparameters
 ├── requirements.txt            # Python dependencies
 ├── .env                        # Local environment variables & Kaggle credentials
@@ -369,9 +379,6 @@ DV/
 | PyCocoTools      | coco_dataset                | Annotation parsing for COCO 2017   |
 | Pillow           | dataset loaders             | File loading for images            |
 | Scikit-learn     | dataset preprocessing       | Normalization & train/val splitting|
-| FastAPI          | server.py                   | REST API & telemetry endpoints     |
-| Uvicorn          | server.py                   | Asynchronous ASGI web server       |
-| Pydantic         | server.py                   | Data validation & serialization    |
 | Python-Dotenv    | config.py                   | Secure environment variable loading|
 | Kaggle           | dataset_downloader          | Dataset downloading via Kaggle API |
 +------------------+-----------------------------+------------------------------------+
@@ -614,14 +621,13 @@ SLIDE 10: Session Telemetry & Pre-Recording Validation Gate
   * Synchronized MP4 video capturing side-by-side Webcam and Avatar canvas.
   * Comprehensive JSON telemetry exporting timestamped 33-point (x, y, z) coordinates,
     expression ratios, and biomechanical joint angles for every single frame.
-- Remote API Ready:
-  * Includes FastAPI and WebSocket streaming (`server.py`) for web frontends.
+- Desktop-only launch: Python/OpenCV opens the webcam and displays the live previews.
 [Speaker Notes]:
 "In professional animation and biomechanics, data integrity is paramount. Our system
 includes a pre-recording readiness gate. If your legs or face are cut off by the webcam
 frame, recording is locked with a warning badge. Once validated, hitting [R] records both
 a synchronized MP4 video and a frame-by-frame JSON telemetry file containing full 3D joint
-angles and facial metrics, ready for downstream analysis or web streaming."
+angles and facial metrics, ready for downstream analysis."
 
 --------------------------------------------------------------------------------
 SLIDE 11: Experimental Results & Performance Benchmarks
@@ -783,11 +789,9 @@ Live Hotkey Controls:
 - [R]     : Start or Stop recording (writes MP4 video and JSON telemetry to ./output/).
 - [Q/ESC] : Safely quit the application and release camera resources.
 
-9.4 Running the Web API & WebSocket Server
-To stream real-time kinematics to web frontends or remote clients:
-   python server.py
-- API Status Endpoint: http://localhost:8000/api/status
-- WebSocket Telemetry: ws://localhost:8000/ws/stream
+9.4 Camera and Preview
+The application runs directly in Python/OpenCV. It does not start a web server or use a localhost page.
+Launch it with `python main.py` and use the OpenCV window controls listed above.
 
 ================================================================================
 END OF MASTER DOCUMENTATION & PRESENTATION BLUEPRINT

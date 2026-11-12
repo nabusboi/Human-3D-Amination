@@ -16,8 +16,6 @@ MODEL_SUBDIRS = {
     "yolo":       os.path.join(MODELS_DIR, "yolo"),
     "mediapipe":  os.path.join(MODELS_DIR, "mediapipe"),
     "qlora_pose": os.path.join(MODELS_DIR, "qlora_pose"),
-    "hdtf_facial":os.path.join(MODELS_DIR, "hdtf_facial"),
-    "mocap_3d":   os.path.join(MODELS_DIR, "mocap_3d"),
 }
 
 # Dataset Subdirectories — corrected to actual nested paths on disk
@@ -45,23 +43,18 @@ for path in MODEL_SUBDIRS.values():
 # Alias used by coco_dataset.py as the default COCO 2017 data directory
 KAGGLE_DATASET_DIR = DATASET_SUBDIRS["coco2017"]
 
-# Dataset Repository Links (for reference)
-DATASET_URLS = {
-    "audio_talking_head": "https://www.kaggle.com/competitions/audio-driven-talking-head-generation",
-    "hdtf":               "https://github.com/MRzzm/HDTF",
-    "cmu_mocap":          "https://www.kaggle.com/datasets/zara2099/cmu-motion-performance-dataset",
-    "amass":              "https://amass.is.tue.mpg.de/",
-    "synthetic_faces":    "https://www.kaggle.com/datasets/cantonioupao/synthetic-human-faces-for-3d-reconstruction",
-    "mvp_human":          "https://github.com/TingtingLiao/MVPHuman.git",
-    "coco2017":           "https://www.kaggle.com/datasets/awsaf49/coco-2017-dataset"
-}
-
 # Camera & Video Stream Settings
 WEBCAM_INDEX = 0
 FRAME_WIDTH = 1280
 FRAME_HEIGHT = 720
 FPS = 30
 MIRROR_WEBCAM = True
+
+# Native desktop avatar (GLB + skeletal animation).
+AVATAR_MODEL_PATH = os.path.join(MODELS_DIR, "avatars", "rpm_fullbody.glb")
+AVATAR_IDLE_PATH = os.path.join(MODELS_DIR, "avatars", "idle_standing.glb")
+AVATAR_VIEW = "auto"  # V cycles automatic body framing, portrait, full body.
+AVATAR_AUTO_FRAME = True  # Follow face size and visible hips/knees/feet.
 
 # YOLO Human Detection
 YOLO_MODEL_NAME = "yolov8n.pt"
@@ -70,16 +63,11 @@ YOLO_CONFIDENCE_THRESHOLD = 0.50
 PERSON_CLASS_ID = 0
 
 # MediaPipe Pose Settings (33 Keypoints)
-MEDIAPIPE_MODEL_COMPLEXITY = 1
 MEDIAPIPE_MIN_DETECTION_CONFIDENCE = 0.65
 MEDIAPIPE_MIN_TRACKING_CONFIDENCE = 0.65
 
-# Pre-Recording Readiness & Live Animation Gate
-REQUIRE_LIVE_ANIMATION = os.getenv("REQUIRE_LIVE_ANIMATION_FOR_RECORDING", "True").lower() == "true"
-PRECHECK_FACE_MIN_CONFIDENCE = 0.70
-PRECHECK_BODY_MIN_CONFIDENCE = 0.70
+# Pre-recording readiness.
 REQUIRED_FACE_LANDMARKS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
-REQUIRED_BODY_JOINTS = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28]
 
 # Model Fine-Tuning & QLoRA Hyperparameters
 LORA_R = 16
@@ -89,11 +77,6 @@ BATCH_SIZE = 16
 LEARNING_RATE = 1e-4
 EPOCHS = 10
 
-# Color Scheme for 3D Human Avatar Renderer (BGR)
-COLOR_BACKGROUND = (18, 22, 28)
-COLOR_AVATAR_TORSO = (220, 150, 40)    # Shaded Metallic Blue
-COLOR_AVATAR_LIMB = (240, 180, 60)     # Shaded Cyan
-COLOR_JOINT_NODE = (0, 240, 255)       # Glowing Yellow
-COLOR_FACE_MESH = (180, 255, 100)      # Lime Green
+# OpenCV status colors (BGR).
 COLOR_TEXT_OK = (80, 220, 100)         # Emerald Green
 COLOR_TEXT_WARN = (0, 165, 255)        # Orange

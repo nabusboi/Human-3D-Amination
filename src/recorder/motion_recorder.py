@@ -30,6 +30,7 @@ class MotionRecorder:
         self.recorded_keyframes: List[Dict] = []
         self.start_time: float = 0.0
         self.frame_count: int = 0
+        self.recording_fps: int = config.FPS
         
         self.last_mp4_path: str = ""
         self.last_json_path: str = ""
@@ -42,6 +43,7 @@ class MotionRecorder:
         """Starts recording session, opens MP4 VideoWriter, initializes keyframe telemetry."""
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         self.current_session_id = f"motion_session_{timestamp}"
+        self.recording_fps = fps
         
         mp4_filename = f"{self.current_session_id}.mp4"
         self.last_mp4_path = os.path.join(self.output_dir, mp4_filename)
@@ -74,7 +76,7 @@ class MotionRecorder:
         self.recorded_keyframes.append(keyframe_data)
         self.frame_count += 1
 
-    def stop_recording() -> Tuple[str, str]:
+    def stop_recording(self) -> Tuple[str, str]:
         """Stops recording session, releases MP4 writer, and exports telemetry to JSON file."""
         if self.state != RecordingState.RECORDING:
             return "", ""
@@ -90,7 +92,7 @@ class MotionRecorder:
             "session_id": self.current_session_id,
             "total_frames": self.frame_count,
             "duration_sec": round(time.time() - self.start_time, 2),
-            "fps": config.FPS,
+            "fps": self.recording_fps,
             "keypoints_topology": "MediaPipe_33_Body_Keypoints",
             "keyframes": self.recorded_keyframes
         }

@@ -5,7 +5,7 @@ import numpy as np
 from torch.utils.data import Dataset
 from PIL import Image
 import torchvision.transforms as T
-from typing import Optional, Tuple, List, Dict
+from typing import Tuple, List, Dict
 import config
 
 
